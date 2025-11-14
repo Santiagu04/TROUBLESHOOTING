@@ -1,0 +1,2 @@
+# TROUBLESHOOTING
+Solucionador de debugs 
