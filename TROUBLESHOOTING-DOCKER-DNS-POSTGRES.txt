@@ -1,0 +1,455 @@
+TROUBLESHOOTING-DOCKER-DNS-POSTGRES.md
+         1 +  # Troubleshooting: Servicios N8N y Evolution no pueden conectarse a PostgreSQL
+         2 +
+         3 +  **Fecha:** 2025-11-14
+         4 +  **Servicios afectados:** n8n_n8n_editor, n8n_n8n_webhook, n8n_n8n_worker, evolution_evolution_api
+         5 +  **Síntoma:** Bad Gateway en N8N UI, servicios reiniciando constantemente
+         6 +  **Causa raíz:** Contenedor postgres_postgres con red corrupta (IP inválida, sin aliases DNS)
+         7 +
+         8 +  ---
+         9 +
+        10 +  ## 1. SÍNTOMAS INICIALES
+        11 +
+        12 +  ### Reportado por el usuario:
+        13 +  - N8N muestra "Bad Gateway" en la interfaz web (https://n8n.automatesolutions.tech)
+        14 +  - El servidor se está reiniciando constantemente
+        15 +  - Los agentes de Chatwoot no responden mensajes
+        16 +
+        17 +  ### Observado en logs:
+        18 +  ```bash
+        19 +  # N8N Editor
+        20 +  n8n_n8n_editor.1: "There was an error initializing DB"
+        21 +  n8n_n8n_editor.1: "getaddrinfo ENOTFOUND postgres_postgres"
+        22 +
+        23 +  # Evolution API
+        24 +  evolution_evolution_api.1: "Error: P1001: Can't reach database server at `postgres_postgres:5432`"
+        25 +  evolution_evolution_api.1: "Migration failed"
+        26 +  ```
+        27 +
+        28 +  ### Estado de servicios:
+        29 +  ```bash
+        30 +  docker service ls | grep -E "(n8n|evolution)"
+        31 +
+        32 +  # Resultado:
+        33 +  n8n_n8n_editor       replicated   0/1   # Reiniciando constantemente
+        34 +  evolution_evolution_api  replicated   1/1   # Intentando conectar sin éxito
+        35 +  ```
+        36 +
+        37 +  ---
+        38 +
+        39 +  ## 2. ANÁLISIS DE RECURSOS DEL SERVIDOR
+        40 +
+        41 +  ### Verificación de sobrecarga (descartada):
+        42 +  ```bash
+        43 +  free -h
+        44 +  # Resultado:
+        45 +  Total: 7.8GB | Usado: 5.7GB (73%) | Disponible: 2.0GB
+        46 +  Swap: 0 (sin swap configurado)
+        47 +
+        48 +  df -h
+        49 +  # Resultado:
+        50 +  /dev/sda1: 96GB total, 40GB usado (42%), 57GB disponible
+        51 +  ```
+        52 +
+        53 +  **Conclusión:** NO hay sobrecarga del servidor. El problema NO es de recursos.
+        54 +
+        55 +  ---
+        56 +
+        57 +  ## 3. ANÁLISIS DE CONFIGURACIÓN
+        58 +
+        59 +  ### 3.1 Archivos YAML actuales:
+        60 +
+        61 +  **evolution.yaml (línea 33):**
+        62 +  ```yaml
+        63 +  - DATABASE_CONNECTION_URI=postgresql://postgres:d3863ab2fdab0c6b8c5cdf05f0667cb1@postgres:5432/evol
+           + ution
+        64 +  ```
+        65 +
+        66 +  **n8n.yaml (líneas 18, 117, 215):**
+        67 +  ```yaml
+        68 +  - DB_POSTGRESDB_HOST=postgres
+        69 +  ```
+        70 +
+        71 +  ### 3.2 Configuración en contenedores corriendo:
+        72 +
+        73 +  ```bash
+        74 +  docker service inspect evolution_evolution_api --format '{{range
+           + .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep DATABASE_CONNECTION_URI
+        75 +
+        76 +  # Resultado:
+        77 +  DATABASE_CONNECTION_URI=postgresql://postgres:d3863ab2fdab0c6b8c5cdf05f0667cb1@postgres_postgres:54
+           + 32/evolution
+        78 +  ```
+        79 +
+        80 +  ```bash
+        81 +  docker service inspect n8n_n8n_editor --format '{{range
+           + .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep DB_POSTGRESDB_HOST
+        82 +
+        83 +  # Resultado:
+        84 +  DB_POSTGRESDB_HOST=postgres_postgres
+        85 +  ```
+        86 +
+        87 +  **Descubrimiento crítico:** Los archivos YAML dicen `postgres` pero los servicios corriendo tienen
+           + `postgres_postgres`. Alguien editó los YAMLs el 2025-11-13 a las 10:50 pero NO redesplegó los
+           + stacks.
+        88 +
+        89 +  ---
+        90 +
+        91 +  ## 4. ANÁLISIS DE RED Y DNS
+        92 +
+        93 +  ### 4.1 Estructura de servicios PostgreSQL:
+        94 +
+        95 +  ```bash
+        96 +  docker service ls | grep postgres
+        97 +
+        98 +  # Resultado:
+        99 +  pgvector_pgvector      replicated   1/1   # Usado por Chatwoot ✓
+       100 +  postgres_postgres      replicated   1/1   # Usado por N8N y Evolution ✗
+       101 +  ```
+       102 +
+       103 +  ### 4.2 Configuración de red del servicio:
+       104 +
+       105 +  ```bash
+       106 +  docker service inspect postgres_postgres --format '{{json .Spec.TaskTemplate.Networks}}'
+       107 +
+       108 +  # Resultado:
+       109 +  [{
+       110 +    "Target": "2zebfcazt9osj6wleoozyv8gd",
+       111 +    "Aliases": ["postgres"]  # ✓ Alias configurado correctamente
+       112 +  }]
+       113 +  ```
+       114 +
+       115 +  ### 4.3 Configuración de red del contenedor:
+       116 +
+       117 +  ```bash
+       118 +  docker inspect postgres_postgres.1.rgyvacbthc7nzuxw7m3zfnnsd --format 'IP: {{range $net, $config :=
+           +  .NetworkSettings.Networks}}{{$config.IPAddress}}{{end}}, Aliases: {{range $net, $config :=
+           + .NetworkSettings.Networks}}{{$config.Aliases}}{{end}}'
+       119 +
+       120 +  # Resultado:
+       121 +  IP: invalid IP
+       122 +  Aliases: []  # ✗ PROBLEMA: Sin aliases, IP inválida
+       123 +  ```
+       124 +
+       125 +  **🔴 CAUSA RAÍZ IDENTIFICADA:** El contenedor tiene red corrupta - IP inválida y sin aliases DNS
+           + registrados, aunque el servicio los especifica.
+       126 +
+       127 +  ### 4.4 Comparación con pgvector (que SÍ funciona):
+       128 +
+       129 +  ```bash
+       130 +  # Chatwoot se conecta a pgvector correctamente
+       131 +  docker exec chatwoot_chatwoot_app.1.xxx getent hosts pgvector
+       132 +  # Resultado: 10.0.1.48  pgvector  ✓
+       133 +
+       134 +  # Intentando conectar a postgres desde chatwoot
+       135 +  docker exec chatwoot_chatwoot_app.1.xxx getent hosts postgres
+       136 +  # Resultado: (sin respuesta) ✗
+       137 +  ```
+       138 +
+       139 +  ### 4.5 Historial del servicio postgres:
+       140 +
+       141 +  ```bash
+       142 +  docker service ps postgres_postgres --format "{{.CurrentState}}\t{{.Error}}"
+       143 +
+       144 +  # Resultado:
+       145 +  Running 5 hours ago
+       146 +  Failed 5 hours ago    "No such container: postgres_p…"
+       147 +  Failed 5 hours ago    "No such container: postgres_p…"
+       148 +  Failed 13 hours ago   "No such container: postgres_p…"
+       149 +  ```
+       150 +
+       151 +  **Patrón:** El contenedor ha tenido múltiples fallos OCI runtime.
+       152 +
+       153 +  ---
+       154 +
+       155 +  ## 5. DIAGNÓSTICO DE BASES DE DATOS
+       156 +
+       157 +  ### 5.1 Verificar bases de datos en pgvector:
+       158 +
+       159 +  ```bash
+       160 +  docker exec pgvector_pgvector.1.xxx psql -U postgres -c "\l" | grep -E "(chatwoot|evolution|n8n)"
+       161 +
+       162 +  # Resultado:
+       163 +  chatwoot  | postgres | UTF8  ✓ (solo Chatwoot usa pgvector)
+       164 +  ```
+       165 +
+       166 +  ### 5.2 Estado del contenedor postgres_postgres:
+       167 +
+       168 +  ```bash
+       169 +  docker inspect postgres_postgres.1.rgyvacbthc7nzuxw7m3zfnnsd --format '{{.State.Status}} - Pid:
+           + {{.State.Pid}}'
+       170 +
+       171 +  # Resultado:
+       172 +  running - Pid: 2021901  # ✓ Corriendo pero con problemas de red
+       173 +  ```
+       174 +
+       175 +  ---
+       176 +
+       177 +  ## 6. SOLUCIÓN APLICADA
+       178 +
+       179 +  ### Paso 1: Revertir archivos YAML a configuración original
+       180 +
+       181 +  **evolution.yaml:**
+       182 +  ```bash
+       183 +  # Antes (no funciona):
+       184 +  - DATABASE_CONNECTION_URI=postgresql://postgres:d3863ab2fdab0c6b8c5cdf05f0667cb1@postgres_postgres:
+           + 5432/evolution
+       185 +
+       186 +  # Después (correcto):
+       187 +  - DATABASE_CONNECTION_URI=postgresql://postgres:d3863ab2fdab0c6b8c5cdf05f0667cb1@postgres:5432/evol
+           + ution
+       188 +  ```
+       189 +
+       190 +  **n8n.yaml:**
+       191 +  ```bash
+       192 +  # Antes (no funciona):
+       193 +  - DB_POSTGRESDB_HOST=postgres_postgres
+       194 +
+       195 +  # Después (correcto):
+       196 +  - DB_POSTGRESDB_HOST=postgres
+       197 +  ```
+       198 +
+       199 +  ### Paso 2: Forzar recreación del servicio postgres_postgres
+       200 +
+       201 +  ```bash
+       202 +  docker service update --force postgres_postgres
+       203 +
+       204 +  # Resultado:
+       205 +  postgres_postgres
+       206 +  overall progress: 1 out of 1 tasks
+       207 +  verify: Service postgres_postgres converged
+       208 +  ```
+       209 +
+       210 +  ### Paso 3: Verificar que la red se corrigió
+       211 +
+       212 +  ```bash
+       213 +  # Nuevo contenedor creado
+       214 +  docker ps --filter name=postgres_postgres --format "{{.Names}}"
+       215 +  # Resultado: postgres_postgres.1.nria89orebftt514sck8k5t2c
+       216 +
+       217 +  # Verificar IP y aliases
+       218 +  docker inspect postgres_postgres.1.nria89orebftt514sck8k5t2c --format 'IP: {{range $net, $config :=
+           +  .NetworkSettings.Networks}}{{$config.IPAddress}}{{end}}'
+       219 +
+       220 +  # Resultado:
+       221 +  IP: 10.0.1.225  ✓ IP válida
+       222 +
+       223 +  # Verificar VIP del servicio
+       224 +  docker service inspect postgres_postgres --format '{{range .Endpoint.VirtualIPs}}IP:
+           + {{.Addr}}{{end}}'
+       225 +
+       226 +  # Resultado:
+       227 +  IP: 10.0.1.11/24  ✓ VIP asignado
+       228 +  ```
+       229 +
+       230 +  ### Paso 4: Probar resolución DNS del alias
+       231 +
+       232 +  ```bash
+       233 +  docker exec chatwoot_chatwoot_app.1.xxx getent hosts postgres
+       234 +
+       235 +  # Resultado:
+       236 +  10.0.1.11  postgres postgres  ✓ ALIAS FUNCIONA
+       237 +
+       238 +  docker exec chatwoot_chatwoot_app.1.xxx ping -c 2 postgres
+       239 +
+       240 +  # Resultado:
+       241 +  PING postgres (10.0.1.11): 56 data bytes
+       242 +  64 bytes from 10.0.1.11: seq=0 ttl=64 time=0.225 ms
+       243 +  64 bytes from 10.0.1.11: seq=1 ttl=64 time=0.080 ms
+       244 +  ✓ CONECTIVIDAD CONFIRMADA
+       245 +  ```
+       246 +
+       247 +  ### Paso 5: Verificar bases de datos existentes
+       248 +
+       249 +  ```bash
+       250 +  docker exec postgres_postgres.1.nria89orebftt514sck8k5t2c psql -U postgres -c "\l"
+       251 +
+       252 +  # Resultado:
+       253 +  evolution | postgres | UTF8  ✓
+       254 +  n8n_queue | postgres | UTF8  ✓
+       255 +  ```
+       256 +
+       257 +  ### Paso 6: Redesplegar stacks con configuración corregida
+       258 +
+       259 +  ```bash
+       260 +  docker stack deploy -c /root/evolution.yaml evolution
+       261 +  docker stack deploy -c /root/n8n.yaml n8n
+       262 +  ```
+       263 +
+       264 +  ---
+       265 +
+       266 +  ## 7. VERIFICACIÓN DE SOLUCIÓN
+       267 +
+       268 +  ### 7.1 Estado de servicios:
+       269 +
+       270 +  ```bash
+       271 +  docker service ls | grep -E "(n8n|evolution)"
+       272 +
+       273 +  # Resultado:
+       274 +  n8n_n8n_editor       replicated   1/1   ✓
+       275 +  n8n_n8n_webhook      replicated   1/1   ✓
+       276 +  n8n_n8n_worker       replicated   1/1   ✓
+       277 +  evolution_evolution_api  replicated   1/1   ✓
+       278 +  ```
+       279 +
+       280 +  ### 7.2 Logs de N8N:
+       281 +
+       282 +  ```bash
+       283 +  docker service logs n8n_n8n_editor --tail 10
+       284 +
+       285 +  # Resultado:
+       286 +  Initializing n8n process
+       287 +  n8n ready on ::, port 5678  ✓
+       288 +  Editor is now accessible via: https://n8n.automatesolutions.tech  ✓
+       289 +  ```
+       290 +
+       291 +  ### 7.3 Logs de Evolution:
+       292 +
+       293 +  ```bash
+       294 +  docker service logs evolution_evolution_api --tail 10
+       295 +
+       296 +  # Resultado:
+       297 +  Deploying migrations for postgresql
+       298 +  Datasource "db": PostgreSQL database "evolution", schema "public" at "postgres:5432"
+       299 +  56 migrations found in prisma/migrations
+       300 +  No pending migrations to apply.  ✓
+       301 +  ```
+       302 +
+       303 +  ### 7.4 Pruebas de conectividad:
+       304 +
+       305 +  ```bash
+       306 +  # N8N Web UI
+       307 +  curl -s https://n8n.automatesolutions.tech | head -5
+       308 +  # Resultado: <!DOCTYPE html>... ✓
+       309 +
+       310 +  # Evolution API
+       311 +  curl -s https://evoapi.automatesolutions.tech/manager/instance/fetchInstances -H "apikey: xxx"
+       312 +  # Resultado: HTML de Evolution Manager ✓
+       313 +  ```
+       314 +
+       315 +  ---
+       316 +
+       317 +  ## 8. PROBLEMAS SECUNDARIOS IDENTIFICADOS
+       318 +
+       319 +  ### Redis desconexiones en Evolution (no crítico):
+       320 +
+       321 +  ```bash
+       322 +  docker logs evolution_evolution_api.1.xxx | tail -5
+       323 +
+       324 +  # Resultado:
+       325 +  [ERROR] [Redis] redis disconnected
+       326 +  ```
+       327 +
+       328 +  **Estado:** La API funciona correctamente a pesar de las advertencias de Redis. Problema secundario
+           +  no crítico que no afecta la funcionalidad principal.
+       329 +
+       330 +  ---
+       331 +
+       332 +  ## 9. RESUMEN EJECUTIVO
+       333 +
+       334 +  ### Problema:
+       335 +  Contenedor `postgres_postgres` con red corrupta (IP inválida, sin aliases DNS) causando fallo en
+           + resolución de nombres para n8n y evolution.
+       336 +
+       337 +  ### Solución:
+       338 +  Recrear el servicio postgres con `docker service update --force postgres_postgres` para regenerar
+           + correctamente la configuración de red.
+       339 +
+       340 +  ### Servicios afectados resueltos:
+       341 +  - ✅ N8N Editor: Funcionando
+       342 +  - ✅ N8N Webhook: Funcionando
+       343 +  - ✅ N8N Worker: Funcionando
+       344 +  - ✅ Evolution API: Conectado a postgres
+       345 +
+       346 +  ### Causa raíz:
+       347 +  Corrupción de red a nivel de contenedor Docker, posiblemente por:
+       348 +  - Reinicios abruptos del servidor
+       349 +  - Problemas en el daemon de Docker
+       350 +  - Actualizaciones de red sin recrear contenedor
+       351 +
+       352 +  ---
+       353 +
+       354 +  ## 10. PROCEDIMIENTO PARA PROBLEMAS SIMILARES
+       355 +
+       356 +  ### Síntomas que indican este problema:
+       357 +  1. Error `getaddrinfo ENOTFOUND <servicio>` en logs
+       358 +  2. Servicio corriendo (`1/1`) pero sin poder conectarse a red
+       359 +  3. `docker inspect` muestra `IP: invalid IP` o `Aliases: []`
+       360 +
+       361 +  ### Diagnóstico rápido:
+       362 +  ```bash
+       363 +  # 1. Verificar IP del contenedor
+       364 +  docker inspect <container_name> --format 'IP: {{range $net, $config :=
+           + .NetworkSettings.Networks}}{{$config.IPAddress}}{{end}}, Aliases: {{$config.Aliases}}'
+       365 +
+       366 +  # 2. Si muestra IP inválida o aliases vacíos:
+       367 +  docker service inspect <service_name> --format '{{range .Spec.TaskTemplate.Networks}}Aliases:
+           + {{.Aliases}}{{end}}'
+       368 +
+       369 +  # 3. Si el servicio especifica aliases pero el contenedor no los tiene -> Red corrupta
+       370 +  ```
+       371 +
+       372 +  ### Solución:
+       373 +  ```bash
+       374 +  # Recrear el servicio afectado
+       375 +  docker service update --force <service_name>
+       376 +
+       377 +  # Verificar que se creó nuevo contenedor con red correcta
+       378 +  docker ps --filter name=<service_name>
+       379 +  docker inspect <new_container> --format 'IP: {{range $net, $config :=
+           + .NetworkSettings.Networks}}{{$config.IPAddress}}{{end}}'
+       380 +
+       381 +  # Redesplegar servicios dependientes
+       382 +  docker stack deploy -c <stack.yaml> <stack_name>
+       383 +  ```
+       384 +
+       385 +  ### Prevención:
+       386 +  - Monitorear logs de Docker daemon para errores OCI runtime
+       387 +  - Evitar kills forzados de contenedores
+       388 +  - Hacer backups regulares de configuraciones de red
+       389 +  - Documentar cambios en archivos YAML con commits
+       390 +
+       391 +  ---
+       392 +
+       393 +  ## 11. COMANDOS DE REFERENCIA
+       394 +
+       395 +  ### Diagnóstico de red Docker Swarm:
+       396 +  ```bash
+       397 +  # Listar servicios y estado
+       398 +  docker service ls
+       399 +
+       400 +  # Ver tareas de un servicio específico
+       401 +  docker service ps <service_name> --no-trunc
+       402 +
+       403 +  # Ver configuración de red de servicio
+       404 +  docker service inspect <service_name> --format '{{json .Spec.TaskTemplate.Networks}}'
+       405 +
+       406 +  # Ver contenedores en red
+       407 +  docker network inspect <network_name> --format '{{range .Containers}}{{.Name}}:
+           + {{.IPv4Address}}{{"\n"}}{{end}}'
+       408 +
+       409 +  # Probar DNS desde contenedor
+       410 +  docker exec <container> getent hosts <hostname>
+       411 +
+       412 +  # Verificar IP y aliases de contenedor
+       413 +  docker inspect <container> --format 'IP: {{range $net, $config :=
+           + .NetworkSettings.Networks}}{{$config.IPAddress}}{{end}}, Aliases: {{$config.Aliases}}'
+       414 +  ```
+       415 +
+       416 +  ### Recreación de servicios:
+       417 +  ```bash
+       418 +  # Forzar recreación sin cambiar configuración
+       419 +  docker service update --force <service_name>
+       420 +
+       421 +  # Redesplegar stack completo
+       422 +  docker stack deploy -c <file.yaml> <stack_name>
+       423 +
+       424 +  # Ver logs de servicio
+       425 +  docker service logs <service_name> --tail 50 --follow
+       426 +  ```
+       427 +
+       428 +  ---
+       429 +
+       430 +  **Autor:** Claude Code
+       431 +  **Revisión:** 2025-11-14
+       432 +  **Stack:** Docker Swarm, PostgreSQL, N8N, Evolution API
