@@ -1,0 +1,390 @@
+ TROUBLESHOOTING_CHATWOOT_EVOLUTION.md                                                                                                  │
+│                                                                                                                                        │
+│ # Troubleshooting: Mensajes de Evolution API no aparecen en Chatwoot UI                                                                │
+│                                                                                                                                        │
+│ **Fecha:** 2025-11-06                                                                                                                  │
+│ **Stack:** Evolution API v2.3.6 + Chatwoot v4.1.0 + PostgreSQL (pgvector)                                                              │
+│ **Problema:** Los mensajes de WhatsApp llegan a Evolution API y se guardan en la base de datos de Chatwoot, pero NO aparecen en la     │
+│ interfaz de usuario.                                                                                                                   │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 📋 Índice                                                                                                                           │
+│ 1. [Síntomas del Problema](#síntomas-del-problema)                                                                                     │
+│ 2. [Proceso de Diagnóstico](#proceso-de-diagnóstico)                                                                                   │
+│ 3. [Causa Raíz](#causa-raíz)                                                                                                           │
+│ 4. [Solución](#solución)                                                                                                               │
+│ 5. [Prevención](#prevención)                                                                                                           │
+│ 6. [Referencias](#referencias)                                                                                                         │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 🚨 Síntomas del Problema                                                                                                            │
+│                                                                                                                                        │
+│ ### Comportamiento observado:                                                                                                          │
+│ - ✅ Los mensajes de WhatsApp llegan a Evolution API (confirmado en logs)                                                               │
+│ - ✅ Evolution API procesa los mensajes correctamente                                                                                   │
+│ - ✅ Los mensajes se guardan en la base de datos de Chatwoot                                                                            │
+│ - ❌ **Los mensajes NO aparecen en la interfaz de Chatwoot**                                                                            │
+│ - ❌ El inbox aparece vacío o muestra "No hay conversaciones activas en este grupo"                                                     │
+│                                                                                                                                        │
+│ ### Configuración inicial:                                                                                                             │
+│ ```yaml                                                                                                                                │
+│ # evolution.yaml (líneas relevantes)                                                                                                   │
+│ CHATWOOT_ENABLED=true                                                                                                                  │
+│ CHATWOOT_MESSAGE_READ=true                                                                                                             │
+│ CHATWOOT_MESSAGE_DELETE=true                                                                                                           │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ ```json                                                                                                                                │
+│ // Configuración de instancia                                                                                                          │
+│ {                                                                                                                                      │
+│   "enabled": true,                                                                                                                     │
+│   "accountId": "1",                                                                                                                    │
+│   "token": "maTyFdUJpnUfP3uXJQJDjDmQ",                                                                                                 │
+│   "url": "https://chatwoot.automatesolutions.tech"                                                                                     │
+│ }                                                                                                                                      │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 🔍 Proceso de Diagnóstico                                                                                                           │
+│                                                                                                                                        │
+│ ### Paso 1: Verificar configuración de Evolution API                                                                                   │
+│                                                                                                                                        │
+│ **Comando ejecutado:**                                                                                                                 │
+│ ```bash                                                                                                                                │
+│ curl -X GET "https://evoapi.automatesolutions.tech/instance/fetchInstances" \                                                          │
+│   -H "apikey: 87209ff5c799c486209ba98cd077bc77"                                                                                        │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Hallazgo:**                                                                                                                          │
+│ ```json                                                                                                                                │
+│ {                                                                                                                                      │
+│   "Chatwoot": {                                                                                                                        │
+│     "enabled": false,  // ❌ PROBLEMA INICIAL                                                                                           │
+│     "accountId": "1",                                                                                                                  │
+│     "token": "maTyFdUJpnUfP3uXJQJDjDmQ"                                                                                                │
+│   }                                                                                                                                    │
+│ }                                                                                                                                      │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Acción tomada:** Habilitar Chatwoot en la instancia                                                                                  │
+│ ```bash                                                                                                                                │
+│ curl -X POST "https://evoapi.automatesolutions.tech/chatwoot/set/AIC_test" \                                                           │
+│   -H "apikey: 87209ff5c799c486209ba98cd077bc77" \                                                                                      │
+│   -H "Content-Type: application/json" \                                                                                                │
+│   -d '{                                                                                                                                │
+│     "enabled": true,                                                                                                                   │
+│     "accountId": "1",                                                                                                                  │
+│     "token": "maTyFdUJpnUfP3uXJQJDjDmQ",                                                                                               │
+│     "url": "https://chatwoot.automatesolutions.tech",                                                                                  │
+│     "signMsg": false,                                                                                                                  │
+│     "reopenConversation": true,                                                                                                        │
+│     "conversationPending": false                                                                                                       │
+│   }'                                                                                                                                   │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:** ✅ Integración habilitada, pero mensajes aún no aparecen en UI                                                           │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Paso 2: Verificar logs de Evolution API                                                                                            │
+│                                                                                                                                        │
+│ **Comando:**                                                                                                                           │
+│ ```bash                                                                                                                                │
+│ docker service logs evolution_evolution_api --tail 50 | grep -i chatwoot                                                               │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Hallazgos importantes:**                                                                                                             │
+│ ```log                                                                                                                                 │
+│ [ChatwootService] New message received - Instance: AIC_test                                                                            │
+│ [ChatwootService] Creating conversation                                                                                                │
+│ [ChatwootService] New conversation created of 573022734929@s.whatsapp.net with ID: 7                                                   │
+│ [ChatwootService] Contact ID: 3                                                                                                        │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Conclusión:** ✅ Evolution API está enviando mensajes correctamente a Chatwoot                                                        │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Paso 3: Verificar datos en la base de datos                                                                                        │
+│                                                                                                                                        │
+│ **Consulta SQL - Verificar mensajes:**                                                                                                 │
+│ ```sql                                                                                                                                 │
+│ SELECT id, content, created_at, inbox_id, conversation_id, sender_type                                                                 │
+│ FROM messages                                                                                                                          │
+│ WHERE inbox_id = 2                                                                                                                     │
+│ ORDER BY created_at DESC                                                                                                               │
+│ LIMIT 10;                                                                                                                              │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:**                                                                                                                         │
+│ ```                                                                                                                                    │
+│  id |  content  |      created_at         | inbox_id | conversation_id | sender_type                                                   │
+│ ----+-----------+-------------------------+----------+-----------------+-------------                                                  │
+│  14 | Hola      | 2025-11-06 03:04:56.803 |        2 |               7 | Contact                                                       │
+│  13 | G         | 2025-11-06 03:01:54.346 |        2 |               5 | Contact                                                       │
+│  10 | H         | 2025-11-06 02:52:27.381 |        2 |               5 | Contact                                                       │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Conclusión:** ✅ Los mensajes SÍ están en la base de datos                                                                            │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ **Consulta SQL - Verificar estado de conversaciones:**                                                                                 │
+│ ```sql                                                                                                                                 │
+│ SELECT id, status, account_id, inbox_id, created_at                                                                                    │
+│ FROM conversations                                                                                                                     │
+│ WHERE inbox_id = 2                                                                                                                     │
+│ ORDER BY updated_at DESC;                                                                                                              │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:**                                                                                                                         │
+│ ```                                                                                                                                    │
+│  id | status | account_id | inbox_id |      created_at                                                                                 │
+│ ----+--------+------------+----------+-------------------------                                                                        │
+│   7 |      2 |          1 |        2 | 2025-11-06 03:04:56.735                                                                         │
+│   5 |      2 |          1 |        2 | 2025-11-06 02:52:27.315                                                                         │
+│   3 |      0 |          1 |        2 | 2025-11-06 02:07:11.655                                                                         │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Hallazgo crítico:** Status = 2 (PENDING) - Las conversaciones están en estado "pending"                                              │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Paso 4: Verificar API de Chatwoot                                                                                                  │
+│                                                                                                                                        │
+│ **Comando:**                                                                                                                           │
+│ ```bash                                                                                                                                │
+│ curl -s -X GET "https://chatwoot.automatesolutions.tech/api/v1/accounts/1/conversations?status=all&inbox_id=2" \                       │
+│   -H "api_access_token: maTyFdUJpnUfP3uXJQJDjDmQ"                                                                                      │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:**                                                                                                                         │
+│ ```json                                                                                                                                │
+│ {                                                                                                                                      │
+│   "data": {                                                                                                                            │
+│     "meta": {                                                                                                                          │
+│       "unassigned_count": 4,                                                                                                           │
+│       "all_count": 4                                                                                                                   │
+│     },                                                                                                                                 │
+│     "payload": [                                                                                                                       │
+│       {                                                                                                                                │
+│         "id": 7,                                                                                                                       │
+│         "status": "pending",                                                                                                           │
+│         "messages": [                                                                                                                  │
+│           {                                                                                                                            │
+│             "content": "Hola",                                                                                                         │
+│             "sender_type": "Contact"                                                                                                   │
+│           }                                                                                                                            │
+│         ]                                                                                                                              │
+│       }                                                                                                                                │
+│     ]                                                                                                                                  │
+│   }                                                                                                                                    │
+│ }                                                                                                                                      │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Conclusión:** ✅ La API de Chatwoot muestra las conversaciones correctamente                                                          │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Paso 5: Investigación en GitHub y documentación oficial                                                                            │
+│                                                                                                                                        │
+│ **Issues revisados:**                                                                                                                  │
+│ 1. [EvolutionAPI #2002](https://github.com/EvolutionAPI/evolution-api/issues/2002) - Messages not appearing as Open                    │
+│ 2. [Chatwoot #12131](https://github.com/chatwoot/chatwoot/issues/12131) - Messages in DB but not showing in UI                         │
+│ 3. [EvolutionAPI #1446](https://github.com/EvolutionAPI/evolution-api/issues/1446) - Messages not reaching Chatwoot                    │
+│                                                                                                                                        │
+│ **Hallazgo clave de GitHub Issue #12131:**                                                                                             │
+│                                                                                                                                        │
+│ > **Usuario:** "Messages are saved in database but don't show in UI"                                                                   │
+│ >                                                                                                                                      │
+│ > **sojan-official (Chatwoot oficial):** "Do you have an agent bot / captain or any similar integration associated to these inboxes?   │
+│ In such cases conversations will be created in pending status during triage."                                                          │
+│ >                                                                                                                                      │
+│ > **Usuario (solución):** "Thanks, I didn't think about the filters. It actually works."                                               │
+│                                                                                                                                        │
+│ **Hipótesis:** El problema está relacionado con Agent Bots activos en el inbox                                                         │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Paso 6: Verificar Agent Bots en el inbox                                                                                           │
+│                                                                                                                                        │
+│ **Consulta SQL:**                                                                                                                      │
+│ ```sql                                                                                                                                 │
+│ SELECT abi.id, abi.inbox_id, abi.agent_bot_id, ab.name as bot_name, ab.bot_type                                                        │
+│ FROM agent_bot_inboxes abi                                                                                                             │
+│ LEFT JOIN agent_bots ab ON abi.agent_bot_id = ab.id                                                                                    │
+│ WHERE abi.inbox_id = 2;                                                                                                                │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:**                                                                                                                         │
+│ ```                                                                                                                                    │
+│  id | inbox_id | agent_bot_id | bot_name  | bot_type                                                                                   │
+│ ----+----------+--------------+-----------+----------                                                                                  │
+│   2 |        2 |            1 | ROCKSPACE |        0                                                                                   │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **✅ CAUSA RAÍZ ENCONTRADA:** Hay un Agent Bot llamado "ROCKSPACE" activo en el inbox 2                                                 │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 🎯 Causa Raíz                                                                                                                       │
+│                                                                                                                                        │
+│ ### Explicación técnica:                                                                                                               │
+│                                                                                                                                        │
+│ Cuando un **Agent Bot** está asociado a un inbox en Chatwoot:                                                                          │
+│                                                                                                                                        │
+│ 1. Las conversaciones entrantes se crean automáticamente con `status = 2` (PENDING)                                                    │
+│ 2. El bot procesa la conversación en un estado de "triaje"                                                                             │
+│ 3. **La interfaz de Chatwoot oculta por defecto las conversaciones en estado PENDING**                                                 │
+│ 4. El usuario necesita ajustar los filtros de vista para ver estas conversaciones                                                      │
+│                                                                                                                                        │
+│ ### Estados de conversación en Chatwoot:                                                                                               │
+│ - `0` = OPEN (visible por defecto)                                                                                                     │
+│ - `1` = RESOLVED (cerrada)                                                                                                             │
+│ - `2` = PENDING (oculta por defecto cuando hay Agent Bot)                                                                              │
+│                                                                                                                                        │
+│ ### Flujo del problema:                                                                                                                │
+│ ```                                                                                                                                    │
+│ WhatsApp → Evolution API → Chatwoot API → Base de datos (status: PENDING)                                                              │
+│                                                ↓                                                                                       │
+│                                         Agent Bot "ROCKSPACE"                                                                          │
+│                                                ↓                                                                                       │
+│                                         UI OCULTA conversación                                                                         │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## ✅ Solución                                                                                                                          │
+│                                                                                                                                        │
+│ ### Opción 1: Desactivar el Agent Bot (Si no se necesita)                                                                              │
+│                                                                                                                                        │
+│ **SQL:**                                                                                                                               │
+│ ```sql                                                                                                                                 │
+│ DELETE FROM agent_bot_inboxes                                                                                                          │
+│ WHERE inbox_id = 2 AND agent_bot_id = 1;                                                                                               │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Bash:**                                                                                                                              │
+│ ```bash                                                                                                                                │
+│ docker exec $(docker ps | grep pgvector | awk '{print $1}') \                                                                          │
+│   psql -U postgres -d chatwoot \                                                                                                       │
+│   -c "DELETE FROM agent_bot_inboxes WHERE inbox_id = 2 AND agent_bot_id = 1;"                                                          │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Resultado:** Las nuevas conversaciones se crearán con status = OPEN y aparecerán inmediatamente                                      │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Opción 2: Ajustar filtros en Chatwoot UI (Mantener el bot activo)                                                                  │
+│                                                                                                                                        │
+│ **Pasos en la interfaz:**                                                                                                              │
+│                                                                                                                                        │
+│ 1. Ir a: `https://chatwoot.automatesolutions.tech/app/accounts/1/inbox/2`                                                              │
+│ 2. En la barra lateral izquierda, hacer clic en:                                                                                       │
+│    - **"All Conversations"** (Todas las conversaciones)                                                                                │
+│    - O **"Unassigned"** (Sin asignar)                                                                                                  │
+│ 3. **NO estar en "Mine"** (Míos) - solo muestra conversaciones asignadas                                                               │
+│ 4. Buscar un toggle o filtro que diga:                                                                                                 │
+│    - "Show pending conversations" / "Mostrar conversaciones pendientes"                                                                │
+│    - "Include bot triaged conversations"                                                                                               │
+│ 5. Activarlo                                                                                                                           │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Opción 3: Reasignar conversaciones manualmente (Temporal)                                                                          │
+│                                                                                                                                        │
+│ **SQL:**                                                                                                                               │
+│ ```sql                                                                                                                                 │
+│ UPDATE conversations                                                                                                                   │
+│ SET status = 0, assignee_id = 1                                                                                                        │
+│ WHERE inbox_id = 2 AND status = 2;                                                                                                     │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **Nota:** Esta solución es temporal. Las nuevas conversaciones seguirán creándose en estado PENDING.                                   │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ### Opción 4: Desactivar el bot desde Chatwoot UI                                                                                      │
+│                                                                                                                                        │
+│ **Pasos:**                                                                                                                             │
+│ 1. Settings → Inboxes → Seleccionar "AIC_test" (inbox 2)                                                                               │
+│ 2. Ir a la pestaña "Collaborators" o "Agent Bots"                                                                                      │
+│ 3. Desactivar o eliminar el bot "ROCKSPACE"                                                                                            │
+│ 4. Guardar cambios                                                                                                                     │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 🛡️ Prevención                                                                                                                      │
+│                                                                                                                                        │
+│ ### Checklist para futuras integraciones Evolution + Chatwoot:                                                                         │
+│                                                                                                                                        │
+│ - [ ] Verificar si hay Agent Bots activos en el inbox                                                                                  │
+│ - [ ] Si hay bots, configurar Evolution con `conversationPending: false`                                                               │
+│ - [ ] Alternativamente, ajustar filtros en Chatwoot UI para mostrar conversaciones pending                                             │
+│ - [ ] Documentar la presencia de bots en la configuración del proyecto                                                                 │
+│ - [ ] Revisar regularmente los estados de conversaciones en la base de datos                                                           │
+│                                                                                                                                        │
+│ ### Comandos útiles de verificación:                                                                                                   │
+│                                                                                                                                        │
+│ **1. Verificar Agent Bots activos:**                                                                                                   │
+│ ```sql                                                                                                                                 │
+│ SELECT i.name as inbox_name, ab.name as bot_name, ab.bot_type                                                                          │
+│ FROM agent_bot_inboxes abi                                                                                                             │
+│ JOIN inboxes i ON abi.inbox_id = i.id                                                                                                  │
+│ JOIN agent_bots ab ON abi.agent_bot_id = ab.id;                                                                                        │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **2. Ver distribución de estados de conversaciones:**                                                                                  │
+│ ```sql                                                                                                                                 │
+│ SELECT inbox_id, status, COUNT(*) as count                                                                                             │
+│ FROM conversations                                                                                                                     │
+│ GROUP BY inbox_id, status                                                                                                              │
+│ ORDER BY inbox_id, status;                                                                                                             │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ **3. Verificar configuración de Evolution:**                                                                                           │
+│ ```bash                                                                                                                                │
+│ curl -X GET "https://evoapi.automatesolutions.tech/instance/fetchInstances" \                                                          │
+│   -H "apikey: TU_API_KEY" | jq '.[] | {name: .name, chatwoot: .Chatwoot}'                                                              │
+│ ```                                                                                                                                    │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 📚 Referencias                                                                                                                      │
+│                                                                                                                                        │
+│ ### Issues de GitHub:                                                                                                                  │
+│ - [Chatwoot #12131 - Messages in DB but not showing in UI](https://github.com/chatwoot/chatwoot/issues/12131) ⭐ **Caso exacto**        │
+│ - [EvolutionAPI #2002 - Messages not appearing as Open](https://github.com/EvolutionAPI/evolution-api/issues/2002)                     │
+│ - [EvolutionAPI #1446 - Messages not reaching Chatwoot](https://github.com/EvolutionAPI/evolution-api/issues/1446)                     │
+│                                                                                                                                        │
+│ ### Documentación oficial:                                                                                                             │
+│ - [Evolution API - Chatwoot Integration](https://doc.evolution-api.com/v2/en/integrations/chatwoot)                                    │
+│ - [Chatwoot - Creating API Channel                                                                                                     │
+│ Inbox](https://www.chatwoot.com/hc/user-guide/articles/1677839703-how-to-create-an-api-channel-inbox)                                  │
+│ - [Chatwoot Developer Docs - Common Errors](https://developers.chatwoot.com/contributing-guide/common-errors)                          │
+│                                                                                                                                        │
+│ ### Estados de conversación en Chatwoot:                                                                                               │
+│ | Código | Estado   | Descripción                           |                                                                          │
+│ |--------|----------|---------------------------------------|                                                                          │
+│ | 0      | OPEN     | Conversación abierta y visible        |                                                                          │
+│ | 1      | RESOLVED | Conversación cerrada/resuelta         |                                                                          │
+│ | 2      | PENDING  | En triaje (oculta si hay Agent Bot)   |                                                                          │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ ## 📊 Resumen Ejecutivo                                                                                                                │
+│                                                                                                                                        │
+│ **Problema:** Mensajes no aparecen en Chatwoot UI                                                                                      │
+│ **Causa:** Agent Bot "ROCKSPACE" activo causa conversaciones en estado PENDING (ocultas por defecto)                                   │
+│ **Solución:** Desactivar Agent Bot o ajustar filtros de vista en UI                                                                    │
+│ **Tiempo de resolución:** ~2 horas de troubleshooting                                                                                  │
+│ **Lección aprendida:** Siempre verificar Agent Bots antes de diagnosticar problemas de integración                                     │
+│                                                                                                                                        │
+│ ---                                                                                                                                    │
+│                                                                                                                                        │
+│ **Documentado por:** Claude Code                                                                                                       │
+│ **Última actualización:** 2025-11-06                                                                                                   │
+│                                        
